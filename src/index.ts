@@ -5,16 +5,94 @@ import { InferenceClient } from '@huggingface/inference'
 import dotenv from 'dotenv'
 dotenv.config()
 
-// 서버 인스턴스 생성
-const server = new McpServer({
+const SERVER_META = {
     name: 'typescript-mcp-server',
     version: '1.0.0',
-    capabilities: {
-        tools: {},
-        resources: {},
-        prompts: {}
+    description: 'TypeScript MCP Server 보일러플레이트'
+} as const
+
+const REGISTERED_TOOLS = [
+    'greeting',
+    'calculator',
+    'calculate',
+    'get_time',
+    'generate_image',
+    'geocode',
+    'get_weather'
+] as const
+
+const REGISTERED_RESOURCES = [
+    { name: 'server-info', uri: 'server://info' }
+] as const
+
+const REGISTERED_PROMPTS = ['code_review'] as const
+
+function buildCodeReviewPrompt(
+    code: string,
+    options?: { language?: string; context?: string }
+): string {
+    const contextLines = [
+        options?.language && `- **언어/스택**: ${options.language}`,
+        options?.context && `- **코드 목적/배경**: ${options.context}`
+    ].filter(Boolean)
+    const contextSection =
+        contextLines.length > 0
+            ? `## 컨텍스트\n${contextLines.join('\n')}\n\n`
+            : ''
+    const codeFence = options?.language?.toLowerCase() ?? ''
+
+    return `당신은 시니어 소프트웨어 엔지니어입니다. 아래 코드에 대해 **코드 리뷰 베스트 프랙티스**에 따라 체계적으로 리뷰해 주세요.
+
+## 리뷰 원칙
+- 변경 의도를 먼저 파악하고, 가정이 필요하면 명시합니다.
+- 문제점만이 아니라 **잘된 점**도 반드시 언급합니다.
+- 모든 지적에는 **이유**와 **구체적인 개선 방향**을 함께 제시합니다.
+- 스타일 취향보다 **버그·보안·유지보수성·성능**을 우선합니다.
+- 가능하면 코드 위치(함수명·라인 등)를 참조해 설명합니다.
+
+## 리뷰 체크리스트
+1. **요약**: 전체 품질, 머지 가능 여부(Approve / Request changes / Comment)
+2. **정확성**: 로직 오류, 엣지 케이스, null/undefined 처리
+3. **가독성**: 네이밍, 함수 크기, 중복, 주석 필요 여부
+4. **설계**: 단일 책임, 결합도, 확장성, 적절한 추상화
+5. **에러 처리**: 예외 처리, 실패 시 복구, 사용자/호출자 피드백
+6. **보안**: 입력 검증, 인젝션, 시크릿 노출, 권한 검사
+7. **성능**: 불필요한 연산·할당, N+1, 비동기/동시성 이슈
+8. **테스트**: 테스트 가능성, 누락된 테스트 케이스 제안
+9. **유지보수성**: 타입 안전성, 의존성, 문서화 필요 여부
+
+## 출력 형식
+각 항목을 아래 구조로 작성합니다.
+
+### [심각도] 제목
+- **위치**: (함수/클래스/라인 등)
+- **문제**: 무엇이 문제인지
+- **제안**: 어떻게 고칠지 (가능하면 예시 코드)
+
+심각도: \`critical\` | \`major\` | \`minor\` | \`nit\`
+
+마지막에 **우선 수정 목록**(상위 3개)과 **잘된 점**을 bullet으로 정리합니다.
+
+${contextSection}## 리뷰할 코드
+\`\`\`${codeFence}
+${code}
+\`\`\``
+}
+
+// 서버 인스턴스 생성
+const server = new McpServer(
+    {
+        name: SERVER_META.name,
+        version: SERVER_META.version
+    },
+    {
+        capabilities: {
+            tools: {},
+            resources: {},
+            prompts: {}
+        }
     }
-})
+)
 
 // 예시 도구: 인사하기
 server.tool(
@@ -96,6 +174,44 @@ server.tool(
     }
 )
 
+server.tool(
+    'calculate',
+    {
+        operator: z
+            .enum(['+', '-', '*', '/'])
+            .describe('사칙연산 연산자 (+, -, *, /)'),
+        a: z.number().describe('첫 번째 숫자'),
+        b: z.number().describe('두 번째 숫자')
+    },
+    async ({ operator, a, b }) => {
+        let result: number
+        switch (operator) {
+            case '+':
+                result = a + b
+                break
+            case '-':
+                result = a - b
+                break
+            case '*':
+                result = a * b
+                break
+            case '/':
+                if (b === 0) throw new Error('0으로 나눌 수 없습니다')
+                result = a / b
+                break
+        }
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: `${a} ${operator} ${b} = ${result}`
+                }
+            ]
+        }
+    }
+)
+
 // 예시 도구: 시간 조회
 server.tool(
     'get_time',
@@ -120,32 +236,41 @@ server.tool(
 server.tool(
     'generate_image',
     {
-        prompt: z.string().describe('이미지 생성을 위한 프롬프트')
+        prompt: z.string().describe('이미지 생성 프롬프트'),
+        num_inference_steps: z
+            .number()
+            .min(1)
+            .max(10)
+            .optional()
+            .default(4)
+            .describe('추론 스텝 수 (기본값: 4, 1~10)')
     },
-    async ({ prompt }) => {
-        try {
-            // Hugging Face 토큰 확인
-            if (!process.env.HF_TOKEN) {
-                throw new Error('HF_TOKEN 환경변수가 설정되지 않았습니다')
+    async ({ prompt, num_inference_steps }) => {
+        if (!process.env.HF_TOKEN) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: 'HF_TOKEN 환경변수가 설정되지 않았습니다. Hugging Face 토큰을 설정한 뒤 다시 시도해 주세요.'
+                    }
+                ]
             }
+        }
 
-            // Hugging Face Inference 클라이언트 생성
+        try {
             const client = new InferenceClient(process.env.HF_TOKEN)
 
-            // 이미지 생성 요청
             const imageBlob = await client.textToImage({
-                provider: 'fal-ai',
+                provider: 'together',
                 model: 'black-forest-labs/FLUX.1-schnell',
                 inputs: prompt,
-                parameters: { num_inference_steps: 5 }
+                parameters: { num_inference_steps }
             })
 
-            // Blob을 ArrayBuffer로 변환 후 base64 인코딩
             const arrayBuffer = await (
                 imageBlob as unknown as Blob
             ).arrayBuffer()
-            const buffer = Buffer.from(arrayBuffer)
-            const base64Data = buffer.toString('base64')
+            const base64Data = Buffer.from(arrayBuffer).toString('base64')
 
             return {
                 content: [
@@ -154,18 +279,19 @@ server.tool(
                         data: base64Data,
                         mimeType: 'image/png'
                     }
-                ],
-                annotations: {
-                    audience: ['user'],
-                    priority: 0.9
-                }
+                ]
             }
         } catch (error) {
-            throw new Error(
-                `이미지 생성 중 오류가 발생했습니다: ${
-                    error instanceof Error ? error.message : '알 수 없는 오류'
-                }`
-            )
+            const message =
+                error instanceof Error ? error.message : '알 수 없는 오류'
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: `이미지 생성 중 오류가 발생했습니다: ${message}`
+                    }
+                ]
+            }
         }
     }
 )
@@ -333,24 +459,45 @@ server.tool(
     }
 )
 
-// 예시 리소스: 서버 정보
+// 서버 정보 리소스
 server.resource(
-    'server://info',
+    'server-info',
     'server://info',
     {
-        name: '서버 정보',
-        description: 'TypeScript MCP Server 보일러플레이트 정보',
+        title: '서버 정보',
+        description: 'MCP 서버 메타데이터, 런타임 상태, 등록된 도구/리소스/프롬프트 목록',
         mimeType: 'application/json'
     },
     async () => {
+        const memory = process.memoryUsage()
+
         const serverInfo = {
-            name: 'typescript-mcp-server',
-            version: '1.0.0',
-            description: 'TypeScript MCP Server 보일러플레이트',
+            ...SERVER_META,
             timestamp: new Date().toISOString(),
-            uptime: process.uptime(),
-            nodeVersion: process.version,
-            platform: process.platform
+            runtime: {
+                uptimeSeconds: process.uptime(),
+                nodeVersion: process.version,
+                platform: process.platform,
+                pid: process.pid,
+                memoryMb: {
+                    rss: Math.round(memory.rss / 1024 / 1024),
+                    heapUsed: Math.round(memory.heapUsed / 1024 / 1024)
+                }
+            },
+            capabilities: {
+                tools: [...REGISTERED_TOOLS],
+                resources: REGISTERED_RESOURCES.map(r => ({
+                    name: r.name,
+                    uri: r.uri
+                })),
+                prompts: [...REGISTERED_PROMPTS]
+            },
+            externalApis: {
+                geocode: 'Nominatim (OpenStreetMap)',
+                weather: 'Open-Meteo',
+                imageGeneration:
+                    'Hugging Face Inference (together / FLUX.1-schnell, HF_TOKEN 필요)'
+            }
         }
 
         return {
@@ -365,21 +512,29 @@ server.resource(
     }
 )
 
-// 예시 프롬프트: 코드 리뷰
+// 코드 리뷰 프롬프트 (베스트 프랙티스 템플릿)
 server.prompt(
     'code_review',
-    'Request Code Review',
+    '코드 리뷰 (Code Review)',
     {
-        code: z.string().describe('The code to review')
+        code: z.string().describe('리뷰할 소스 코드'),
+        language: z
+            .string()
+            .optional()
+            .describe('프로그래밍 언어 또는 프레임워크 (예: TypeScript, Python)'),
+        context: z
+            .string()
+            .optional()
+            .describe('코드의 목적이나 배경 설명 (선택)')
     },
-    async ({ code }) => {
+    async ({ code, language, context }) => {
         return {
             messages: [
                 {
                     role: 'user',
                     content: {
                         type: 'text',
-                        text: `다음 코드를 분석하고 상세한 리뷰를 제공해주세요:\n\n1. 코드 품질 평가\n2. 개선 가능한 부분\n3. 모범 사례 권장사항\n4. 보안 고려사항\n\n리뷰할 코드:\n\n\`\`\`\n${code}\n\`\`\``
+                        text: buildCodeReviewPrompt(code, { language, context })
                     }
                 }
             ]
