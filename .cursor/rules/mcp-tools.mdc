@@ -1,0 +1,24 @@
+---
+description: my-mcp-server MCP 도구 우선 사용 규칙
+globs:
+alwaysApply: true
+---
+
+# my-mcp-server 도구 우선 사용
+
+이 워크스페이스에는 `my-mcp-server` MCP 서버가 연결되어 있습니다.
+아래 기능이 필요할 때는 **반드시 Cursor 내장 도구보다 `my-mcp-server`의 MCP 도구를 먼저 사용**하세요.
+
+| 기능 | 사용할 도구 |
+|------|------------|
+| 이미지 생성 / 그림 그리기 | `my-mcp-server` → `generate_image` |
+| 사칙연산 계산 | `my-mcp-server` → `calculator` 또는 `calculate` |
+| 현재 시각 조회 | `my-mcp-server` → `get_time` |
+| 주소 → 좌표 변환 | `my-mcp-server` → `geocode` |
+| 날씨 조회 | `my-mcp-server` → `get_weather` |
+| 인사말 생성 | `my-mcp-server` → `greeting` |
+
+## 이미지 생성 규칙
+
+- "그림 그려줘", "이미지 만들어줘", "~를 그려줘" 등의 요청은 **항상** `my-mcp-server`의 `generate_image` 도구를 사용합니다.
+- Cursor 내장 `GenerateImage` 도구는 `my-mcp-server`를 사용할 수 없는 경우에만 fallback으로 사용합니다.

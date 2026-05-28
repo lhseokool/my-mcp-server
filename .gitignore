@@ -82,6 +82,10 @@ web_modules/
 # Next.js build output
 .next
 out
+.vercel
+
+# Cursor local config (contains tokens and machine-specific settings)
+.cursor/mcp.json
 
 # Nuxt.js build / generate output
 .nuxt
